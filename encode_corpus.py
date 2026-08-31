@@ -45,7 +45,7 @@ def encode_corpus(corpus_dir: Path = CORPUS_DIR, out_path: Path = OUT_PATH,
             # 改用 "query: " 前綴——這兩種前綴在訓練時是分開處理的，前綴不
             # 一致會讓相似度分數失真，不能省略或混用。
             passage = f"passage: {body}"
-            _warn_if_too_long(source_path, passage, model)
+            _warn_if_too_long(source_path, passage, model, meta.get("type", ""))
             embedding = model.encode(passage, normalize_embeddings=True)
 
             record = {

@@ -113,22 +113,54 @@ def _delete_by_id(conn: sqlite3.Connection, doc_id: int) -> None:
     conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
 
 
-def _warn_if_too_long(source_path: str, passage: str, model: SentenceTransformer) -> None:
+MEMORY_TYPE = "memory"  # frontmatter 的 type: memory 表示這是模型自己寫入的記憶文件
+
+
+def _warn_if_too_long(source_path: str, passage: str, model: SentenceTransformer,
+                       doc_type: str = "") -> None:
     """超過模型 max_seq_length 的內容會被 model.encode() 默默截斷、不會進
     向量（不會報錯，chunk_text/檔案內容本身不受影響，只有拿去算相似度的
     那個向量只看得到前面 limit 個 token）。只印警告、不擋寫入。
+
+    警告文字依 doc_type 是否為 MEMORY_TYPE（frontmatter `type: memory`）分兩種：
+    - 記憶文件（模型自己寫入用來記事的文件）：可以考慮拆成續篇文件，但要不
+      要拆仍由模型臨場判斷後段內容是否豐富到值得獨立成篇。
+    - 非記憶文件（原始資料、非模型為了記憶而產生的文件）：不可拆分/修改原
+      始檔案本身——原檔案的完整性優先於索引方便；如果之後發現多次搜尋不到
+      只存在後段的內容，可以另外新增一份記憶文件來輔助搜尋，但不動原檔案。
     """
     limit = getattr(model, "max_seq_length", 512)
     n_tokens = len(model.tokenizer.encode(passage))
     if n_tokens <= limit:
         return
-    print(
+    is_memory = doc_type.strip().lower() == MEMORY_TYPE
+    base = (
         f"⚠️ 警告：{source_path} 編碼後有 {n_tokens} tokens，超過模型上限"
         f"（{limit}）。超過的部分會被模型默默截斷、不會進入向量，可能讓這份"
         f"文件在語意搜尋時漏掉只出現在後段的內容（讀取內容本身仍是完整全文，"
-        f"只有搜尋用的向量受影響，較難被搜尋到）。",
-        file=sys.stderr,
+        f"只有搜尋用的向量受影響，較難被搜尋到）。\n"
     )
+    if is_memory:
+        base += (
+            f"    這是記憶文件（type: {MEMORY_TYPE}），可以考慮把後段拆成一份"
+            f"獨立的續篇文件——如果真的拆開：(1) 在這篇文件最後補上一段指向"
+            f"續篇的連結（續篇的標題/tags/關鍵字）；(2) 續篇那份文件也要標明"
+            f"自己是接續於這一篇（哪個 source_path/標題），不能只有單向連結；"
+            f"(3) 幫續篇加上「續篇」相關的 tag（例如 continuation）。但要不要"
+            f"拆完全取決於臨場判斷——關鍵不是超過多少，而是「後段/新增的內容"
+            f"是否豐富到足以獨立成一個篇章」：內容單薄的話硬拆出一份檔案反而"
+            f"奇怪，不拆、保留現狀也是合理選擇；只有後段本身夠豐富、站得住腳"
+            f"當一個獨立主題時，才值得拆成續篇。"
+        )
+    else:
+        base += (
+            f"    這不是記憶文件（type 不是 {MEMORY_TYPE}），不可以拆分或修改"
+            f"這份原始檔案本身——原檔案內容的完整性優先於索引方便，不要為了"
+            f"塞進 token 上限而動使用者的原始資料。如果之後發現多次搜尋都找"
+            f"不到只出現在後段的內容，可以另外新增一份 type: {MEMORY_TYPE} 的"
+            f"記憶文件，摘要或指向那段內容來輔助搜尋，但原檔案維持不動。"
+        )
+    print(base, file=sys.stderr)
 
 
 def _row_to_dict(row: tuple, distance: float | None, chunk_text: str | None) -> dict:
@@ -195,7 +227,7 @@ def store_document(source_path: str, rag_dir: Path = RAG_DIR,
 
     # E5 系列模型的既定慣例：被檢索的內容要用 "passage: " 前綴。
     passage = f"passage: {body}"
-    _warn_if_too_long(source_path, passage, model)
+    _warn_if_too_long(source_path, passage, model, meta.get("type", ""))
     embedding = model.encode(passage, normalize_embeddings=True)
 
     row = conn.execute(
