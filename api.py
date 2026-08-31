@@ -199,6 +199,15 @@ def create_document(source_path: str, body: str, *, title: str | None = None,
             f"檔案已存在：{full_path}（新增不會覆蓋既有檔案，修改既有內容請改檔案後用 edit_document()）"
         )
 
+    if not type.strip():
+        print(
+            f"⚠️ 提醒：{source_path} 沒有指定 type（目前是空字串）。如果這份"
+            f"文件是模型自己寫來記事的記憶文件，請加上 type=\"{MEMORY_TYPE}\"——"
+            f"沒標的話，之後內容超過模型 token 上限時會被當成非記憶文件處理"
+            f"（只會提醒新增輔助記憶文件，不會建議拆成續篇）。",
+            file=sys.stderr,
+        )
+
     meta = {
         "title":  title or Path(source_path).stem,
         "tags":   tags or [],
