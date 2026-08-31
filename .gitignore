@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+
+# 下載的嵌入模型（見 README「安裝」一節取得方式）
+models/
+
+# 語料與建好的索引：使用者自己的資料，不進版控
+corpus/*
+!corpus/.gitkeep
+index/*
+!index/.gitkeep
