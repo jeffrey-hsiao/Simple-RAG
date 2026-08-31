@@ -116,8 +116,7 @@ def _delete_by_id(conn: sqlite3.Connection, doc_id: int) -> None:
 def _warn_if_too_long(source_path: str, passage: str, model: SentenceTransformer) -> None:
     """超過模型 max_seq_length 的內容會被 model.encode() 默默截斷、不會進
     向量（不會報錯，chunk_text/檔案內容本身不受影響，只有拿去算相似度的
-    那個向量只看得到前面 limit 個 token）。只印警告、不擋寫入——要不要拆成
-    續篇文件是內容判斷，不是這裡能自動決定的。
+    那個向量只看得到前面 limit 個 token）。只印警告、不擋寫入。
     """
     limit = getattr(model, "max_seq_length", 512)
     n_tokens = len(model.tokenizer.encode(passage))
@@ -127,15 +126,7 @@ def _warn_if_too_long(source_path: str, passage: str, model: SentenceTransformer
         f"⚠️ 警告：{source_path} 編碼後有 {n_tokens} tokens，超過模型上限"
         f"（{limit}）。超過的部分會被模型默默截斷、不會進入向量，可能讓這份"
         f"文件在語意搜尋時漏掉只出現在後段的內容（讀取內容本身仍是完整全文，"
-        f"只有搜尋用的向量受影響）。\n"
-        f"    可以考慮把後段拆成一份獨立的續篇文件——如果真的拆開：(1) 在這篇"
-        f"文件最後補上一段指向續篇的連結（續篇的標題/tags/關鍵字）；"
-        f"(2) 續篇那份文件也要標明自己是接續於這一篇（哪個 source_path/"
-        f"標題），不能只有單向連結；(3) 幫續篇加上「續篇」相關的 tag（例如"
-        f"continuation）。但要不要拆完全取決於臨場判斷——關鍵不是超過多少，"
-        f"而是「後段/新增的內容是否豐富到足以獨立成一個篇章」：內容單薄的話"
-        f"硬拆出一份檔案反而奇怪，不拆、保留現狀也是合理選擇；只有後段本身"
-        f"夠豐富、站得住腳當一個獨立主題時，才值得拆成續篇。",
+        f"只有搜尋用的向量受影響，較難被搜尋到）。",
         file=sys.stderr,
     )
 
