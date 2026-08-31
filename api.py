@@ -57,9 +57,10 @@ from sentence_transformers import SentenceTransformer
 
 from frontmatter import parse_frontmatter, render_frontmatter
 
-RAG_DIR   = Path(__file__).parent
-MODEL_DIR = RAG_DIR / "models" / "multilingual-e5-small"
-DB_PATH   = RAG_DIR / "index" / "vectors.sqlite"
+RAG_DIR    = Path(__file__).parent
+MODEL_DIR  = RAG_DIR / "models" / "multilingual-e5-small"
+MODEL_NAME = "intfloat/multilingual-e5-small"
+DB_PATH    = RAG_DIR / "index" / "vectors.sqlite"
 
 _model_cache: SentenceTransformer | None = None
 
@@ -67,7 +68,14 @@ _model_cache: SentenceTransformer | None = None
 def _load_model(model_dir: Path = MODEL_DIR) -> SentenceTransformer:
     global _model_cache
     if _model_cache is None:
-        _model_cache = SentenceTransformer(str(model_dir))
+        if model_dir.exists():
+            _model_cache = SentenceTransformer(str(model_dir))
+        else:
+            print(f"[提示] 找不到本機模型 {model_dir}，改從 {MODEL_NAME} 下載並存檔...",
+                  file=sys.stderr)
+            model = SentenceTransformer(MODEL_NAME)
+            model.save(str(model_dir))
+            _model_cache = model
     return _model_cache
 
 
@@ -97,9 +105,19 @@ def _connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _resolve_path(source_path: str, rag_dir: Path = RAG_DIR) -> Path:
+    """把 source_path 轉成實際檔案路徑。絕對路徑（例如跨目錄索引外部檔案時
+    存的絕對路徑）直接照用；相對路徑則沿用既有慣例，視為相對於 rag_dir。
+    兩種形式共存於同一個資料庫裡，讓「專案內文件」跟「外部目錄索引進來的
+    文件」可以並存，不用互相遷就成同一種路徑格式。"""
+    p = Path(source_path)
+    return p if p.is_absolute() else rag_dir / p
+
+
 def _read_source(source_path: str, rag_dir: Path = RAG_DIR) -> tuple[dict, str]:
-    """讀 source_path（相對於 rag_dir）指到的檔案，回傳 (frontmatter 欄位, 內文)。"""
-    full_path = rag_dir / source_path
+    """讀 source_path 指到的檔案，回傳 (frontmatter 欄位, 內文)。source_path
+    可以是相對於 rag_dir 的路徑，也可以是絕對路徑（見 _resolve_path）。"""
+    full_path = _resolve_path(source_path, rag_dir)
     if not full_path.exists():
         raise FileNotFoundError(f"找不到檔案：{full_path}")
     return parse_frontmatter(full_path.read_text(encoding="utf-8"))
@@ -193,7 +211,7 @@ def create_document(source_path: str, body: str, *, title: str | None = None,
     source_path 指到的檔案必須還不存在，避免不小心覆蓋既有內容——要修改
     既有文件的內容，請先手動改檔案，再呼叫 edit_document() 同步索引。
     """
-    full_path = rag_dir / source_path
+    full_path = _resolve_path(source_path, rag_dir)
     if full_path.exists():
         raise FileExistsError(
             f"檔案已存在：{full_path}（新增不會覆蓋既有檔案，修改既有內容請改檔案後用 edit_document()）"
@@ -264,6 +282,37 @@ def store_document(source_path: str, rag_dir: Path = RAG_DIR,
     conn.commit()
     conn.close()
     return doc_id
+
+
+# ── 1b. 跨目錄索引外部資料夾（不複製檔案，直接以絕對路徑索引原地檔案） ──────
+
+def index_external_dir(root_dir: Path, extensions: tuple[str, ...] = (".md", ".txt"),
+                        rag_dir: Path = RAG_DIR, db_path: Path = DB_PATH,
+                        model_dir: Path = MODEL_DIR) -> list[tuple[str, int | str]]:
+    """走訪 root_dir 底下所有檔案，副檔名符合 extensions 的，直接以絕對路徑
+    當 source_path 呼叫 store_document() 建索引——檔案留在原地，不複製、
+    不搬進 corpus/。root_dir 是呼叫端傳入的執行期參數，不是寫死在程式碼裡
+    的路徑，所以可以指向 rag_dir 以外的任何位置（這正是跨目錄索引的用途）。
+
+    外部檔案通常沒有 frontmatter，parse_frontmatter() 對沒有 frontmatter 的
+    內容回傳空 meta，store_document() 會自動 fallback：title 用檔名、
+    tags/type/status 用空值——不需要事先幫外部檔案加 frontmatter。
+
+    回傳 [(絕對路徑字串, doc_id 或錯誤訊息字串), ...]，方便呼叫端統計/印出
+    成功與失敗的檔案，不會因為單一檔案讀取失敗就中斷整批索引。
+    """
+    root_dir = root_dir.resolve()
+    results: list[tuple[str, int | str]] = []
+    for path in sorted(root_dir.rglob("*")):
+        if not path.is_file() or path.suffix.lower() not in extensions:
+            continue
+        source_path = str(path.resolve())
+        try:
+            doc_id = store_document(source_path, rag_dir=rag_dir, db_path=db_path, model_dir=model_dir)
+            results.append((source_path, doc_id))
+        except Exception as e:
+            results.append((source_path, f"錯誤：{e}"))
+    return results
 
 
 # ── 2. 向量搜尋 ──────────────────────────────────────────────────────────────
@@ -413,8 +462,15 @@ def _cli():
     p_create.add_argument("--type", default="")
     p_create.add_argument("--status", default="")
 
-    p_store = sub.add_parser("store", help="索引一份已經存在磁碟上的文件（source_path 相對於 rag/）")
+    p_store = sub.add_parser("store", help="索引一份已經存在磁碟上的文件（source_path 可相對於 rag/，也可以是絕對路徑）")
     p_store.add_argument("source_path")
+
+    p_index_dir = sub.add_parser(
+        "index-dir",
+        help="跨目錄索引：走訪指定資料夾，直接以絕對路徑索引符合副檔名的檔案（不複製進 corpus/）",
+    )
+    p_index_dir.add_argument("directory", help="要索引的外部資料夾路徑")
+    p_index_dir.add_argument("--ext", default="md,txt", help="要索引的副檔名，逗號分隔（預設 md,txt）")
 
     p_edit = sub.add_parser("edit", help="編輯既有文件（重新讀檔並覆蓋資料庫）")
     p_edit.add_argument("source_path")
@@ -437,6 +493,14 @@ def _cli():
     elif args.command == "store":
         doc_id = store_document(args.source_path)
         print(f"已儲存：{args.source_path}（id={doc_id}）")
+    elif args.command == "index-dir":
+        exts = tuple(f".{e.strip().lstrip('.').lower()}" for e in args.ext.split(",") if e.strip())
+        results = index_external_dir(Path(args.directory), extensions=exts)
+        ok = [r for r in results if isinstance(r[1], int)]
+        failed = [r for r in results if not isinstance(r[1], int)]
+        print(f"索引完成：成功 {len(ok)}/{len(results)} 份（來源：{args.directory}）")
+        for sp, err in failed:
+            print(f"  失敗：{sp} → {err}")
     elif args.command == "edit":
         doc_id = edit_document(args.source_path)
         print(f"已更新：{args.source_path}（id={doc_id}）")

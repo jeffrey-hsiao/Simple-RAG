@@ -38,9 +38,10 @@ models/            嵌入模型（未納入版控，見下方「安裝」）
 pip install -r requirements.txt
 ```
 
-下載嵌入模型到 `models/multilingual-e5-small`（也可以直接讓
-`sentence-transformers` 用模型名稱 `intfloat/multilingual-e5-small` 自動
-下載到快取，但這份程式碼預設是讀本機路徑，需要先下載好）：
+嵌入模型會在第一次呼叫時自動處理：`_load_model()` 檢查
+`models/multilingual-e5-small` 是否存在，不存在的話會自動從
+`intfloat/multilingual-e5-small` 下載並存檔到該路徑，之後就跟本機模型
+一樣直接讀，不會每次都重新下載。也可以手動先下載好：
 
 ```python
 from sentence_transformers import SentenceTransformer
@@ -106,8 +107,19 @@ python api.py delete <source_path>
 python api.py search "<查詢字串>" --top-k 5
 ```
 
-`source_path` 一律是相對於這批程式檔案所在目錄的路徑（例如
-`corpus/foo.md`）。
+`source_path` 可以是相對於這批程式檔案所在目錄的路徑（例如
+`corpus/foo.md`），也可以是絕對路徑——絕對路徑用來索引專案目錄以外的
+檔案，檔案留在原地、不會被複製進 `corpus/`，資料庫只存那個絕對路徑當
+指標，`search()`/`edit_document()` 讀內容時會直接讀原始位置。
+
+```bash
+# 跨目錄索引：走訪外部資料夾，直接以絕對路徑索引符合副檔名的檔案
+python api.py index-dir "<外部資料夾路徑>" --ext md,txt
+```
+
+外部檔案通常沒有 frontmatter，這沒關係——`create_document()`/
+`store_document()` 對缺少 frontmatter 的內容會自動 fallback：
+title 用檔名、tags/type/status 用空值。
 
 `search` 是互動式的：先列出 top-k 筆的路徑/metadata，輸入編號可以看該筆
 完整內容（即時讀檔），同時會另外彈出一個 tkinter 視窗顯示同樣的內容，方
